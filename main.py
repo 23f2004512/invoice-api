@@ -88,7 +88,9 @@ def extract_invoice(data: InvoiceRequest):
 
     # Find invoice number.
     invoice_no = first_match(
-        r"(?:invoice\s*(?:no|number|#)?|bill\s*(?:no|number|#)?)\s*[:#-]?\s*([A-Za-z0-9/_-]+)",
+        r"\b(?:invoice|bill)\s*(?:no\.?|number|#|id)?\s*[:=#-]?\s*"
+        r"(?:invoice\s*)?"
+        r"((?=[A-Za-z0-9/_-]*\d)[A-Za-z0-9]+(?:[-/_][A-Za-z0-9]+)*)",
         text,
     )
 
