@@ -114,7 +114,11 @@ def extract_invoice(data: InvoiceRequest):
 
     # Find tax only, such as GST, CGST, SGST, VAT, or Tax.
     raw_tax = first_match(
-        r"(?:gst|cgst|sgst|igst|vat|tax)(?:\s*\(\s*\d+(?:\.\d+)?%\s*\))?\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([\d,]+(?:\.\d{1,2})?)",
+        r"\b(?:gst|cgst|sgst|igst|vat|tax)"
+        r"(?:\s+(?:amount|total|payable))?"
+        r"(?:\s*(?:\([^)]*\)|(?:@|at)\s*\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*%))?"
+        r"\s*[:=\-]?\s*(?:rs\.?|inr|₹|\$)?\s*"
+        r"([\d,]+(?:\.\d{1,2})?)",
         text,
     )
     tax = money_to_float(raw_tax)
