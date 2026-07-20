@@ -109,7 +109,17 @@ def extract_invoice(data: InvoiceRequest):
 
     # Important: amount must be SUBTOTAL, before tax.
     raw_amount = first_match(
-        r"(?:subtotal|sub[- ]?total|amount\s*before\s*tax|net\s*amount)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([\d,]+(?:\.\d{1,2})?)",
+        r"\b(?:"
+        r"sub\s*-?\s*total|"
+        r"net\s*(?:amount|total)|"
+        r"taxable\s*(?:amount|value)|"
+        r"items?\s*total|"
+        r"(?:amount|total)\s*(?:before|excluding|exclusive\s+of|excl\.?)\s*(?:tax|gst)|"
+        r"(?:amount|total)\s*\(\s*(?:before|excluding|exclusive\s+of|excl\.?)\s*(?:tax|gst)[^)]*\)"
+        r")"
+        r"(?:\s*\([^)]*\))?"
+        r"\s*[:=\-]?\s*(?:rs\.?|inr|₹|\$)?\s*"
+        r"([\d,]+(?:\.\d{1,2})?)",
         text,
     )
     amount = money_to_float(raw_amount)
