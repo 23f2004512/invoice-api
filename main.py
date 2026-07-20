@@ -1,144 +1,129 @@
+import re
+from datetime import date
+from typing import Optional
+
+from dateutil import parser as date_parser
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dateutil.parser import parse
-import re
 
-app = FastAPI(title="Invoice Extraction API")
 
-# ---------------- CORS ---------------- #
+app = FastAPI(title="IITM Invoice Extraction API")
 
+# Lets a Cloudflare Worker (and other websites) call this API.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ---------------- Request ---------------- #
-
 class InvoiceRequest(BaseModel):
     invoice_text: str
 
 
-# ---------------- Helpers ---------------- #
+class InvoiceResponse(BaseModel):
+    invoice_no: Optional[str] = None
+    date: Optional[str] = None
+    vendor: Optional[str] = None
+    amount: Optional[float] = None
+    tax: Optional[float] = None
+    currency: Optional[str] = None
 
-def extract_money(text):
-    if not text:
+
+def first_match(pattern: str, text: str) -> Optional[str]:
+    """Return the first matching captured value, or None."""
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else None
+
+
+def money_to_float(value: Optional[str]) -> Optional[float]:
+    """Convert 'Rs. 2,199.00' or '2,199.00' into 2199.0."""
+    if not value:
         return None
 
-    text = text.replace(",", "")
+    cleaned = re.sub(r"[^\d.,-]", "", value)
+    cleaned = cleaned.replace(",", "")
 
-    m = re.search(r"(\d+(?:\.\d+)?)", text)
-
-    if m:
-        return float(m.group(1))
-
-    return None
-
-
-def extract_currency(text):
-    upper = text.upper()
-
-    if "INR" in upper or "RS." in upper or "RS " in upper or "₹" in text:
-        return "INR"
-
-    if "USD" in upper or "$" in text:
-        return "USD"
-
-    if "EUR" in upper or "€" in text:
-        return "EUR"
-
-    if "GBP" in upper or "£" in text:
-        return "GBP"
-
-    return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
 
 
-def extract_field(patterns, text):
-    for pattern in patterns:
-        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        if m:
-            return m.group(1).strip()
-
-    return None
-
-
-def normalize_date(value):
-    if value is None:
+def to_iso_date(value: Optional[str]) -> Optional[str]:
+    """Convert '15 March 2026' into '2026-03-15'."""
+    if not value:
         return None
 
     try:
-        return parse(value, dayfirst=True).date().isoformat()
-    except:
+        return date_parser.parse(value, dayfirst=True, fuzzy=True).date().isoformat()
+    except (ValueError, OverflowError):
         return None
 
 
-# ---------------- Endpoint ---------------- #
+def detect_currency(text: str) -> Optional[str]:
+    text_upper = text.upper()
+
+    if "INR" in text_upper or "RS." in text_upper or "RS " in text_upper or "₹" in text:
+        return "INR"
+    if "USD" in text_upper or "$" in text:
+        return "USD"
+    if "EUR" in text_upper or "€" in text:
+        return "EUR"
+
+    return None
+
 
 @app.get("/")
-def root():
-    return {"status": "running"}
+def home():
+    return {"message": "Invoice extraction API is running"}
 
 
-@app.post("/extract")
-def extract(req: InvoiceRequest):
+@app.post("/extract", response_model=InvoiceResponse)
+def extract_invoice(data: InvoiceRequest):
+    text = data.invoice_text
 
-    text = req.invoice_text
+    # Find invoice number.
+    invoice_no = first_match(
+        r"(?:invoice\s*(?:no|number|#)?|bill\s*(?:no|number|#)?)\s*[:#-]?\s*([A-Za-z0-9/_-]+)",
+        text,
+    )
 
-    invoice_no = extract_field([
-        r"Invoice\s*(?:No|Number)?\s*[:#]\s*([^\n]+)",
-        r"Invoice\s*#\s*([^\n]+)",
-        r"Inv\s*(?:No)?\s*[:#]?\s*([^\n]+)",
-    ], text)
+    # Find a date written after Date:, Invoice Date:, etc.
+    raw_date = first_match(
+        r"(?:invoice\s*date|date)\s*[:\-]?\s*([A-Za-z0-9,\-/ ]{6,30})",
+        text,
+    )
+    invoice_date = to_iso_date(raw_date)
 
-    date = extract_field([
-        r"Date\s*:\s*([^\n]+)",
-        r"Invoice\s*Date\s*:\s*([^\n]+)",
-    ], text)
+    # Stop vendor value when another known label begins.
+    vendor = first_match(
+        r"(?:vendor|supplier|seller|company)\s*[:\-]\s*(.+?)(?=\s+(?:subtotal|tax|gst|total|amount|invoice\s*date|date)\s*[:\-]|\n|$)",
+        text,
+    )
 
-    vendor = extract_field([
-        r"Vendor\s*:\s*([^\n]+)",
-        r"Seller\s*:\s*([^\n]+)",
-        r"Supplier\s*:\s*([^\n]+)",
-    ], text)
+    # Important: amount must be SUBTOTAL, before tax.
+    raw_amount = first_match(
+        r"(?:subtotal|sub[- ]?total|amount\s*before\s*tax|net\s*amount)\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([\d,]+(?:\.\d{1,2})?)",
+        text,
+    )
+    amount = money_to_float(raw_amount)
 
-    subtotal = extract_field([
-        r"Subtotal.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
-        r"Sub\s*Total.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
-        r"Amount\s*Before\s*Tax\s*[:\-]?\s*(.*)",
-        r"Before\s*Tax\s*[:\-]?\s*(.*)",
-        r"Net\s*Amount\s*[:\-]?\s*(.*)",
-        r"Taxable\s*Value\s*[:\-]?\s*(.*)",
-        r"Amount\s*[:\-]?\s*(.*)",
-    ], text)
+    # Find tax only, such as GST, CGST, SGST, VAT, or Tax.
+    raw_tax = first_match(
+        r"(?:gst|cgst|sgst|igst|vat|tax)(?:\s*\(\s*\d+(?:\.\d+)?%\s*\))?\s*[:\-]?\s*(?:rs\.?|inr|₹|\$)?\s*([\d,]+(?:\.\d{1,2})?)",
+        text,
+    )
+    tax = money_to_float(raw_tax)
 
-    tax = extract_field([
-        r"GST.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
-        r"VAT.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
-        r"Tax.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
-    ], text)
-
-    # Because regex above has two capture groups
-    if subtotal:
-        amount = extract_money(subtotal)
-    else:
-        amount = None
-
-    if tax:
-        tax_amount = extract_money(tax)
-    else:
-        tax_amount = None
-
-    currency = extract_currency(text)
-
-    return {
-        "invoice_no": invoice_no,
-        "date": normalize_date(date),
-        "vendor": vendor,
-        "amount": amount,
-        "tax": tax_amount,
-        "currency": currency
-    }
+    return InvoiceResponse(
+        invoice_no=invoice_no,
+        date=invoice_date,
+        vendor=vendor,
+        amount=amount,
+        tax=tax,
+        currency=detect_currency(text),
+    )
