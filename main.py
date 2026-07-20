@@ -108,6 +108,11 @@ def extract(req: InvoiceRequest):
     subtotal = extract_field([
         r"Subtotal.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
         r"Sub\s*Total.*?([A-Z]{3}|Rs\.?|₹|\$|€|£)?\s*([\d,]+\.\d{2})",
+        r"Amount\s*Before\s*Tax\s*[:\-]?\s*(.*)",
+        r"Before\s*Tax\s*[:\-]?\s*(.*)",
+        r"Net\s*Amount\s*[:\-]?\s*(.*)",
+        r"Taxable\s*Value\s*[:\-]?\s*(.*)",
+        r"Amount\s*[:\-]?\s*(.*)",
     ], text)
 
     tax = extract_field([
